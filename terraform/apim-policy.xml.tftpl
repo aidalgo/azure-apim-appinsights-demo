@@ -1,0 +1,101 @@
+<policies>
+    <inbound>
+        <base />
+        <cors allow-credentials="false">
+            <allowed-origins>
+%{ for origin in allowed_origins ~}
+                <origin>${origin}</origin>
+%{ endfor ~}
+            </allowed-origins>
+            <allowed-methods>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Origin</header>
+                <header>X-Requested-With</header>
+                <header>Content-Name</header>
+                <header>Content-Type</header>
+                <header>Accept</header>
+                <header>Cache-Control</header>
+                <header>Sdk-Context</header>
+                <header>X-Set-Cross-Origin-Resource-Policy</header>
+                <header>Content-Encoding</header>
+            </allowed-headers>
+        </cors>
+        <authentication-managed-identity resource="https://monitor.azure.com" />
+
+        <!--
+            Stamp ai.location.ip directly on every telemetry envelope.
+            Prefer the first X-Forwarded-For hop when present (for trusted WAF
+            or reverse proxy scenarios); otherwise fall back to the caller IP
+            observed by APIM.
+        -->
+        <set-body><![CDATA[@{
+            var body = context.Request.Body.As<JArray>();
+            var xff = context.Request.Headers.GetValueOrDefault("X-Forwarded-For", "");
+            var firstHop = !string.IsNullOrWhiteSpace(xff)
+                ? xff.Split(',')[0].Trim()
+                : "";
+            var candidateIp = firstHop;
+
+            if (!string.IsNullOrWhiteSpace(candidateIp))
+            {
+                if (candidateIp.StartsWith("[") && candidateIp.Contains("]"))
+                {
+                    var endBracket = candidateIp.IndexOf(']');
+                    if (endBracket > 1)
+                    {
+                        candidateIp = candidateIp.Substring(1, endBracket - 1);
+                    }
+                }
+                else
+                {
+                    var lastColon = candidateIp.LastIndexOf(':');
+                    var firstColon = candidateIp.IndexOf(':');
+                    var hasDot = candidateIp.IndexOf('.') >= 0;
+
+                    // APIM can provide direct caller XFF as IPv4:port. Strip the port.
+                    if (hasDot && lastColon > 0 && firstColon == lastColon)
+                    {
+                        candidateIp = candidateIp.Substring(0, lastColon);
+                    }
+                }
+            }
+
+            System.Net.IPAddress parsedIp;
+            var clientIp = System.Net.IPAddress.TryParse(candidateIp, out parsedIp)
+                ? parsedIp.ToString()
+                : context.Request.IpAddress;
+
+            foreach (var item in body)
+            {
+                var obj = item as JObject;
+                if (obj == null) { continue; }
+
+                var tags = obj["tags"] as JObject;
+                if (tags == null)
+                {
+                    tags = new JObject();
+                    obj["tags"] = tags;
+                }
+
+                if (!string.IsNullOrWhiteSpace(clientIp))
+                {
+                    tags["ai.location.ip"] = clientIp;
+                }
+            }
+
+            return body.ToString();
+        }]]></set-body>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

@@ -1,0 +1,4 @@
+publisher_email = "you@example.com"
+# name_prefix    = "apimaidemo"
+# location       = "eastus2"
+# allowed_origins = ["http://localhost:5173"]

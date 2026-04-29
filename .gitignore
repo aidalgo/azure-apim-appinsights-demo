@@ -1,0 +1,19 @@
+node_modules/
+dist/
+app.zip
+*.tsbuildinfo
+.github/
+.vscode/
+.env
+.env.local
+.env.*.local
+.DS_Store
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+!terraform/*.tfvars.example
+terraform/crash.log
+terraform/tfplan
