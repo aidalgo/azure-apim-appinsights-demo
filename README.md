@@ -10,8 +10,40 @@ browser.
 > non‑secret identifier, not a security token. What this design hides is the
 > *ingestion endpoint*: APIM authenticates to App Insights using its managed
 > identity, and App Insights local authentication is disabled, so the public
-> ingestion endpoint will reject any direct telemetry. See:
-> <https://techcommunity.microsoft.com/blog/azureobservabilityblog/using-azure-api-management-as-a-proxy-for-application-insights-telemetry/4422236>.
+> ingestion endpoint will reject any direct telemetry.
+>
+> The ikey is not acting as a secret in this design, but it is still the
+> resource identifier the browser SDK uses and sends in the telemetry
+> payload. APIM + managed identity replaces the authentication part, not the
+> resource identification part. If you put in a random value, the SDK may
+> initialize, but the telemetry will not be routed/accepted correctly by
+> Application Insights.
+
+## Hardening with APIM
+
+Putting APIM in front of the ingestion endpoint also gives you a place to
+apply additional protections that are not possible when the browser talks to
+App Insights directly. Consider layering some or all of the following in the
+`appinsights-proxy` API policy:
+
+- **Rate limiting / quotas** (`rate-limit-by-key`, `quota-by-key`) keyed on
+  caller IP, subscription, or a user claim, to blunt floods and accidental
+  client loops.
+- **JWT validation** (`validate-jwt`) for authenticated users, so only
+  tokens issued by your identity provider (e.g. Entra ID) can post
+  telemetry, and unauthenticated traffic is rejected at the edge.
+- **Strict CORS** restricted to your app's exact origin(s) instead of `*`.
+- **Request size and content-type checks** (`check-header`,
+  `validate-content`) to reject oversized or malformed payloads before they
+  reach App Insights.
+- **IP allow/deny lists** (`ip-filter`) when telemetry should only come
+  from known networks.
+- **Bot / abuse protection** by fronting APIM with Azure Front Door or
+  Application Gateway + WAF.
+- **Named values + Key Vault** for any secrets referenced by policies, so
+  they are never exposed to the browser.
+- **Diagnostic logging** to App Insights/Log Analytics on the APIM API
+  itself, so you can see who is calling the proxy and how.
 
 ## Architecture
 
