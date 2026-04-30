@@ -1,10 +1,12 @@
-# React + APIM + Application Insights demo
+# APIM + Application Insights ingestion proxy demo
 
-This repo shows how a React (Vite) app can send browser telemetry through
-**Azure API Management** instead of posting directly to the public Application
-Insights ingestion endpoint. APIM becomes the controlled entry point: it can
-enforce policy, authenticate to Azure Monitor with its managed identity, and
-forward telemetry to Application Insights.
+This repo shows a pattern for public-facing apps that send telemetry from
+untrusted clients: put **Azure API Management** in front of the Application
+Insights ingestion endpoint instead of letting clients post to it directly.
+APIM becomes the controlled entry point, authenticates to Azure Monitor with
+managed identity, and forwards telemetry to Application Insights.
+
+The sample app uses React and Vite, but the pattern is framework-agnostic.
 
 It includes two variants:
 
