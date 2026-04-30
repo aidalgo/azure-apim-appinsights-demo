@@ -31,3 +31,9 @@ variable "allowed_origins" {
   type        = list(string)
   default     = ["http://localhost:5173"]
 }
+
+variable "appinsights_ingestion_alert_threshold_mb" {
+  description = "Alert threshold in MB for billable ingestion from this App Insights resource over the last hour."
+  type        = number
+  default     = 1024
+}

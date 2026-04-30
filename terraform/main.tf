@@ -127,6 +127,75 @@ resource "azurerm_api_management_named_value" "appinsights_proxy_real_ikey" {
   secret              = true
 }
 
+resource "azurerm_monitor_action_group" "appinsights_ingestion" {
+  name                = "${var.name_prefix}-ingest-ag-${local.suffix}"
+  resource_group_name = azurerm_resource_group.this.name
+  short_name          = "aiing${local.suffix}"
+
+  email_receiver {
+    name                    = "publisher-email"
+    email_address           = var.publisher_email
+    use_common_alert_schema = true
+  }
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "appinsights_ingestion_spike" {
+  name                = "${var.name_prefix}-ai-ingestion-${local.suffix}"
+  resource_group_name = azurerm_resource_group.this.name
+  location            = azurerm_resource_group.this.location
+
+  evaluation_frequency      = "PT15M"
+  window_duration           = "PT1H"
+  scopes                    = [azurerm_log_analytics_workspace.this.id]
+  severity                  = 2
+  enabled                   = true
+  auto_mitigation_enabled   = true
+  skip_query_validation     = true
+  query_time_range_override = "PT1H"
+  description               = "Alerts when billable ingestion for this Application Insights resource exceeds the expected hourly volume."
+  display_name              = "High Application Insights ingestion volume"
+
+  criteria {
+    query = <<-QUERY
+      let aiResourceId = tolower("${azurerm_application_insights.this.id}");
+      union AppAvailabilityResults,
+            AppBrowserTimings,
+            AppDependencies,
+            AppExceptions,
+            AppEvents,
+            AppMetrics,
+            AppPageViews,
+            AppPerformanceCounters,
+            AppRequests,
+            AppSystemEvents,
+            AppTraces
+      | where TimeGenerated >= ago(1h)
+      | where tolower(_ResourceId) == aiResourceId
+      | where tolower(tostring(_IsBillable)) == "true"
+      | summarize DataMB = sum(_BilledSize) / 1e6
+    QUERY
+
+    operator                = "GreaterThan"
+    threshold               = var.appinsights_ingestion_alert_threshold_mb
+    time_aggregation_method = "Total"
+    metric_measure_column   = "DataMB"
+
+    failing_periods {
+      minimum_failing_periods_to_trigger_alert = 1
+      number_of_evaluation_periods             = 1
+    }
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.appinsights_ingestion.id]
+    email_subject = "High Application Insights ingestion volume detected"
+    custom_properties = {
+      AppInsightsResourceId = azurerm_application_insights.this.id
+      ThresholdMB           = tostring(var.appinsights_ingestion_alert_threshold_mb)
+    }
+  }
+}
+
 resource "azurerm_api_management_api" "appinsights_proxy" {
   name                  = "appinsights-proxy"
   resource_group_name   = azurerm_resource_group.this.name

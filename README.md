@@ -6,6 +6,38 @@ gated by APIM's managed identity instead of being called directly from the
 browser. It also includes an optional variant where the browser sends a
 placeholder ikey and APIM injects the real one server-side.
 
+In the default flow, the browser still uses the standard Application Insights
+JavaScript SDK shape: it knows which Application Insights resource it is
+writing to, but it posts telemetry to APIM instead of calling the ingestion
+endpoint directly. APIM then authenticates to Azure Monitor with its managed
+identity and forwards the payload to Application Insights.
+
+This repo also includes an optional second flow for cases where you want to
+keep the real ikey out of the frontend bundle too. In that variant, the
+browser sends a placeholder ikey to a separate APIM endpoint, and APIM rewrites
+the telemetry with the real ikey from a secret named value before forwarding
+it.
+
+> **Important caveat.** The Application Insights JavaScript SDK still needs an
+> instrumentation key in the browser. Microsoft documents the ikey as a
+> non‑secret identifier, not a security token. What this design hides is the
+> *ingestion endpoint*: APIM authenticates to App Insights using its managed
+> identity, and App Insights local authentication is disabled, so the public
+> ingestion endpoint will reject any direct telemetry.
+>
+> The ikey is not acting as a secret in this design, but it is still the
+> resource identifier the browser SDK uses and sends in the telemetry
+> payload. APIM + managed identity replaces the authentication part, not the
+> resource identification part. If you put in a random value, the SDK may
+> initialize, but the telemetry will not be routed/accepted correctly by
+> Application Insights.
+>
+> If you also want to keep the real ikey out of the frontend, this demo
+> includes an optional APIM variant where the browser sends a placeholder
+> ikey and APIM injects the real one server-side from a secret named value
+> before forwarding telemetry. That is a separate configuration from the
+> default `/v2/track` flow.
+
 ## Hardening with APIM
 
 Putting APIM in front of the ingestion endpoint also gives you a place to
@@ -36,25 +68,7 @@ App Insights directly. Consider layering some or all of the following in the
 - **Diagnostic logging** to App Insights/Log Analytics on the APIM API
   itself, so you can see who is calling the proxy and how.
 
-> **Important caveat.** The Application Insights JavaScript SDK still needs an
-> instrumentation key in the browser. Microsoft documents the ikey as a
-> non‑secret identifier, not a security token. What this design hides is the
-> *ingestion endpoint*: APIM authenticates to App Insights using its managed
-> identity, and App Insights local authentication is disabled, so the public
-> ingestion endpoint will reject any direct telemetry.
->
-> The ikey is not acting as a secret in this design, but it is still the
-> resource identifier the browser SDK uses and sends in the telemetry
-> payload. APIM + managed identity replaces the authentication part, not the
-> resource identification part. If you put in a random value, the SDK may
-> initialize, but the telemetry will not be routed/accepted correctly by
-> Application Insights.
->
-> If you also want to keep the real ikey out of the frontend, this demo
-> includes an optional APIM variant where the browser sends a placeholder
-> ikey and APIM injects the real one server-side from a secret named value
-> before forwarding telemetry. That is a separate configuration from the
-> default `/v2/track` flow.
+As a general best practice, add an ingestion-volume alert even if you already rate-limit at APIM. APIM helps control API traffic, but an ingestion alert helps catch direct telemetry spikes, noisy clients, or buggy instrumentation before they become unexpected cost or excessive noise in Application Insights. In this demo, Terraform creates an Azure Monitor scheduled query alert against the shared Log Analytics workspace, filtered to this specific Application Insights resource.
 
 ## Architecture
 
@@ -79,6 +93,8 @@ All resources live in a single resource group, in the configured Azure region
 - API Management (Basic v2) with system-assigned managed identity and two APIs:
   `appinsights-proxy` exposing `POST /v2/track`, and
   `appinsights-proxy-ikey` exposing `POST /v2-secure/v2/track`
+- Azure Monitor action group + scheduled query alert for high billable
+  ingestion from this App Insights resource
 
 ## Prerequisites
 
@@ -127,6 +143,10 @@ terraform apply
 
 > APIM Basic v2 provisioning usually completes in a few minutes (the legacy
 > Developer/Basic tiers took 30–45 minutes).
+>
+> Terraform also creates an ingestion alert that emails `publisher_email` when
+> billable data volume for this App Insights resource exceeds
+> `appinsights_ingestion_alert_threshold_mb` in 1 hour (default: 1024 MB).
 
 After apply, capture the outputs:
 
