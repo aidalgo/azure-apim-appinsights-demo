@@ -108,7 +108,7 @@ All resources live in a single resource group, in the configured Azure region
 
 - Log Analytics workspace
 - Application Insights (workspace-based, local auth disabled)
-- App Service plan (Linux B1) + Linux Web App (Node 20)
+- App Service plan (Linux B1) + Linux Web App (Node 24 LTS)
 - API Management (Basic v2) with system-assigned managed identity and two APIs:
   `appinsights-proxy` exposing `POST /v2/track`, and
   `appinsights-proxy-ikey` exposing `POST /v2-secure/v2/track`

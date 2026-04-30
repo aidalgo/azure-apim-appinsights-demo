@@ -93,13 +93,13 @@ resource "azurerm_linux_web_app" "this" {
   site_config {
     always_on = true
     application_stack {
-      node_version = "20-lts"
+      node_version = "24-lts"
     }
     app_command_line = "npm run start"
   }
 
   app_settings = {
-    WEBSITE_NODE_DEFAULT_VERSION       = "~20"
+    WEBSITE_NODE_DEFAULT_VERSION       = "~24"
     SCM_DO_BUILD_DURING_DEPLOYMENT     = "true"
     VITE_APPINSIGHTS_CONNECTION_STRING = local.browser_connection_string
   }
