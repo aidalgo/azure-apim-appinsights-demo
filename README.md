@@ -6,20 +6,6 @@ gated by APIM's managed identity instead of being called directly from the
 browser. It also includes an optional variant where the browser sends a
 placeholder ikey and APIM injects the real one server-side.
 
-> **Important caveat.** The Application Insights JavaScript SDK still needs an
-> instrumentation key in the browser. Microsoft documents the ikey as a
-> non‑secret identifier, not a security token. What this design hides is the
-> *ingestion endpoint*: APIM authenticates to App Insights using its managed
-> identity, and App Insights local authentication is disabled, so the public
-> ingestion endpoint will reject any direct telemetry.
->
-> The ikey is not acting as a secret in this design, but it is still the
-> resource identifier the browser SDK uses and sends in the telemetry
-> payload. APIM + managed identity replaces the authentication part, not the
-> resource identification part. If you put in a random value, the SDK may
-> initialize, but the telemetry will not be routed/accepted correctly by
-> Application Insights.
-
 ## Hardening with APIM
 
 Putting APIM in front of the ingestion endpoint also gives you a place to
@@ -43,8 +29,32 @@ App Insights directly. Consider layering some or all of the following in the
   Application Gateway + WAF.
 - **Named values + Key Vault** for any secrets referenced by policies, so
   they are never exposed to the browser.
+- **Private ingestion with Azure Monitor Private Link (AMPLS)** if you also
+  want the Application Insights ingestion endpoint reachable only over private
+  networking. That requires APIM to have private network reachability to Azure
+  Monitor; this Basic v2 demo does not configure that.
 - **Diagnostic logging** to App Insights/Log Analytics on the APIM API
   itself, so you can see who is calling the proxy and how.
+
+> **Important caveat.** The Application Insights JavaScript SDK still needs an
+> instrumentation key in the browser. Microsoft documents the ikey as a
+> non‑secret identifier, not a security token. What this design hides is the
+> *ingestion endpoint*: APIM authenticates to App Insights using its managed
+> identity, and App Insights local authentication is disabled, so the public
+> ingestion endpoint will reject any direct telemetry.
+>
+> The ikey is not acting as a secret in this design, but it is still the
+> resource identifier the browser SDK uses and sends in the telemetry
+> payload. APIM + managed identity replaces the authentication part, not the
+> resource identification part. If you put in a random value, the SDK may
+> initialize, but the telemetry will not be routed/accepted correctly by
+> Application Insights.
+>
+> If you also want to keep the real ikey out of the frontend, this demo
+> includes an optional APIM variant where the browser sends a placeholder
+> ikey and APIM injects the real one server-side from a secret named value
+> before forwarding telemetry. That is a separate configuration from the
+> default `/v2/track` flow.
 
 ## Architecture
 
