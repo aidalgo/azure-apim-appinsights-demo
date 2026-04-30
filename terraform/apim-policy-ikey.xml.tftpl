@@ -1,0 +1,129 @@
+<policies>
+    <inbound>
+        <base />
+        <cors allow-credentials="false">
+            <allowed-origins>
+%{ for origin in allowed_origins ~}
+                <origin>${origin}</origin>
+%{ endfor ~}
+            </allowed-origins>
+            <allowed-methods>
+                <method>POST</method>
+                <method>OPTIONS</method>
+            </allowed-methods>
+            <allowed-headers>
+                <header>Origin</header>
+                <header>X-Requested-With</header>
+                <header>Content-Name</header>
+                <header>Content-Type</header>
+                <header>Accept</header>
+                <header>Cache-Control</header>
+                <header>Sdk-Context</header>
+                <header>X-Set-Cross-Origin-Resource-Policy</header>
+                <header>Content-Encoding</header>
+            </allowed-headers>
+        </cors>
+        <rewrite-uri template="/v2.1/track" />
+        <authentication-managed-identity resource="https://monitor.azure.com" />
+        <set-variable name="realIkey" value="{{appinsights-proxy-real-ikey}}" />
+
+        <!--
+            Variant of the appinsights-proxy policy that injects the real
+            Application Insights instrumentation key into every telemetry
+            envelope via an APIM named value. The browser SDK is configured
+            with a placeholder ikey (e.g.
+            00000000-0000-0000-0000-000000000000); APIM rewrites both the
+            "iKey" field and the ikey segment embedded in "name"
+            (Microsoft.ApplicationInsights.<ikey-no-dashes>.<Type>) before
+            forwarding to the ingestion endpoint, so the real ikey never
+            ships to the browser or appears directly in the policy XML.
+
+            Also stamps ai.location.ip on each envelope, mirroring the
+            original appinsights-proxy policy.
+        -->
+        <set-body><![CDATA[@{
+            var realIkey = (string)context.Variables["realIkey"];
+            var realIkeyNoDashes = realIkey.Replace("-", "");
+
+            var body = context.Request.Body.As<JArray>();
+            var xff = context.Request.Headers.GetValueOrDefault("X-Forwarded-For", "");
+            var firstHop = !string.IsNullOrWhiteSpace(xff)
+                ? xff.Split(',')[0].Trim()
+                : "";
+            var candidateIp = firstHop;
+
+            if (!string.IsNullOrWhiteSpace(candidateIp))
+            {
+                if (candidateIp.StartsWith("[") && candidateIp.Contains("]"))
+                {
+                    var endBracket = candidateIp.IndexOf(']');
+                    if (endBracket > 1)
+                    {
+                        candidateIp = candidateIp.Substring(1, endBracket - 1);
+                    }
+                }
+                else
+                {
+                    var lastColon = candidateIp.LastIndexOf(':');
+                    var firstColon = candidateIp.IndexOf(':');
+                    var hasDot = candidateIp.IndexOf('.') >= 0;
+
+                    if (hasDot && lastColon > 0 && firstColon == lastColon)
+                    {
+                        candidateIp = candidateIp.Substring(0, lastColon);
+                    }
+                }
+            }
+
+            System.Net.IPAddress parsedIp;
+            var clientIp = System.Net.IPAddress.TryParse(candidateIp, out parsedIp)
+                ? parsedIp.ToString()
+                : context.Request.IpAddress;
+
+            foreach (var item in body)
+            {
+                var obj = item as JObject;
+                if (obj == null) { continue; }
+
+                // Replace the iKey on the envelope with the real one.
+                obj["iKey"] = realIkey;
+
+                // Rewrite the name discriminator:
+                // Microsoft.ApplicationInsights.<ikey-no-dashes>.<Type>
+                var name = (string)obj["name"];
+                if (!string.IsNullOrEmpty(name))
+                {
+                    var parts = name.Split('.');
+                    if (parts.Length >= 4)
+                    {
+                        parts[2] = realIkeyNoDashes;
+                        obj["name"] = string.Join(".", parts);
+                    }
+                }
+
+                var tags = obj["tags"] as JObject;
+                if (tags == null)
+                {
+                    tags = new JObject();
+                    obj["tags"] = tags;
+                }
+
+                if (!string.IsNullOrWhiteSpace(clientIp))
+                {
+                    tags["ai.location.ip"] = clientIp;
+                }
+            }
+
+            return body.ToString();
+        }]]></set-body>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

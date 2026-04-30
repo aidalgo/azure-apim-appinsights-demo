@@ -38,8 +38,9 @@ locals {
   apim_base_url = "https://${local.apim_name}.azure-api.net"
 
   # Region prefix used by App Insights ingestion endpoints, e.g. "eastus2".
-  ingestion_region = lower(replace(var.location, " ", ""))
-  ingestion_url    = "https://${local.ingestion_region}.in.applicationinsights.azure.com/v2.1/track"
+  ingestion_region    = lower(replace(var.location, " ", ""))
+  ingestion_base_url  = "https://${local.ingestion_region}.in.applicationinsights.azure.com"
+  ingestion_track_url = "${local.ingestion_base_url}/v2.1/track"
 
   # Browser connection string: keep the original ikey but route ingestion via APIM.
   browser_connection_string = "InstrumentationKey=${azurerm_application_insights.this.instrumentation_key};IngestionEndpoint=${local.apim_base_url}/"
@@ -117,6 +118,15 @@ resource "azurerm_api_management" "this" {
   }
 }
 
+resource "azurerm_api_management_named_value" "appinsights_proxy_real_ikey" {
+  name                = "appinsights-proxy-real-ikey"
+  display_name        = "appinsights-proxy-real-ikey"
+  resource_group_name = azurerm_resource_group.this.name
+  api_management_name = azurerm_api_management.this.name
+  value               = azurerm_application_insights.this.instrumentation_key
+  secret              = true
+}
+
 resource "azurerm_api_management_api" "appinsights_proxy" {
   name                  = "appinsights-proxy"
   resource_group_name   = azurerm_resource_group.this.name
@@ -125,7 +135,7 @@ resource "azurerm_api_management_api" "appinsights_proxy" {
   display_name          = "App Insights Proxy"
   path                  = "v2/track"
   protocols             = ["https"]
-  service_url           = local.ingestion_url
+  service_url           = local.ingestion_track_url
   subscription_required = false
 }
 
@@ -156,6 +166,60 @@ resource "azurerm_api_management_api_policy" "appinsights_proxy" {
   resource_group_name = azurerm_resource_group.this.name
 
   xml_content = templatefile("${path.module}/apim-policy.xml.tftpl", {
+    allowed_origins = concat(var.allowed_origins, [local.webapp_url])
+  })
+}
+
+# ------------------------------------------------------------------
+# Variant API: same proxy, but APIM injects the real instrumentation
+# key into every telemetry envelope. Lets the browser ship a
+# placeholder ikey so the real one never leaves Azure.
+#
+# Exposed to the browser SDK as:
+#   IngestionEndpoint=https://<apim>.azure-api.net/v2-secure/
+# Which the SDK expands to POST https://<apim>.azure-api.net/v2-secure/v2/track
+# ------------------------------------------------------------------
+
+resource "azurerm_api_management_api" "appinsights_proxy_ikey" {
+  name                  = "appinsights-proxy-ikey"
+  resource_group_name   = azurerm_resource_group.this.name
+  api_management_name   = azurerm_api_management.this.name
+  revision              = "1"
+  display_name          = "App Insights Proxy (ikey injection)"
+  path                  = "v2-secure"
+  protocols             = ["https"]
+  service_url           = local.ingestion_base_url
+  subscription_required = false
+}
+
+resource "azurerm_api_management_api_operation" "track_post_ikey" {
+  operation_id        = "track-post"
+  api_name            = azurerm_api_management_api.appinsights_proxy_ikey.name
+  api_management_name = azurerm_api_management.this.name
+  resource_group_name = azurerm_resource_group.this.name
+  display_name        = "Track telemetry"
+  method              = "POST"
+  url_template        = "/v2/track"
+}
+
+resource "azurerm_api_management_api_operation" "track_options_ikey" {
+  operation_id        = "track-options"
+  api_name            = azurerm_api_management_api.appinsights_proxy_ikey.name
+  api_management_name = azurerm_api_management.this.name
+  resource_group_name = azurerm_resource_group.this.name
+  display_name        = "Track telemetry (CORS preflight)"
+  method              = "OPTIONS"
+  url_template        = "/v2/track"
+}
+
+resource "azurerm_api_management_api_policy" "appinsights_proxy_ikey" {
+  api_name            = azurerm_api_management_api.appinsights_proxy_ikey.name
+  api_management_name = azurerm_api_management.this.name
+  resource_group_name = azurerm_resource_group.this.name
+
+  depends_on = [azurerm_api_management_named_value.appinsights_proxy_real_ikey]
+
+  xml_content = templatefile("${path.module}/apim-policy-ikey.xml.tftpl", {
     allowed_origins = concat(var.allowed_origins, [local.webapp_url])
   })
 }

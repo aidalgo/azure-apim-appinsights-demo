@@ -3,7 +3,8 @@
 Minimal demo showing how a React (Vite) app can send browser telemetry through
 **Azure API Management** so the Application Insights ingestion endpoint is
 gated by APIM's managed identity instead of being called directly from the
-browser.
+browser. It also includes an optional variant where the browser sends a
+placeholder ikey and APIM injects the real one server-side.
 
 > **Important caveat.** The Application Insights JavaScript SDK still needs an
 > instrumentation key in the browser. Microsoft documents the ikey as a
@@ -59,13 +60,15 @@ https://eastus2.in.applicationinsights.azure.com/v2.1/track  (local auth disable
 Application Insights (workspace-based) → Log Analytics
 ```
 
-All resources live in a single resource group in **East US 2**:
+All resources live in a single resource group, in the configured Azure region
+(default: **East US 2**):
 
 - Log Analytics workspace
 - Application Insights (workspace-based, local auth disabled)
 - App Service plan (Linux B1) + Linux Web App (Node 20)
-- API Management (Basic v2) with system-assigned managed identity and an
-  `appinsights-proxy` API exposing `POST /v2/track`
+- API Management (Basic v2) with system-assigned managed identity and two APIs:
+  `appinsights-proxy` exposing `POST /v2/track`, and
+  `appinsights-proxy-ikey` exposing `POST /v2-secure/v2/track`
 
 ## Prerequisites
 
@@ -89,6 +92,16 @@ Open <http://localhost:5173> and click the buttons. Watch the Network tab —
 once `VITE_APPINSIGHTS_CONNECTION_STRING` points at APIM, every telemetry
 POST should target `https://<apim>.azure-api.net/v2/track`.
 
+To test the placeholder-ikey variant instead, set
+`VITE_APPINSIGHTS_CONNECTION_STRING` to
+`browser_connection_string_placeholder_ikey`; the browser will then post to
+`https://<apim>.azure-api.net/v2-secure/v2/track`.
+
+The extra `/v2-secure` base path is only needed in this demo because both the
+original proxy and the placeholder-ikey variant are configured side by side in
+the same APIM instance. If you deployed only the placeholder-ikey variant, you
+would typically keep the usual `/v2/track` browser-facing path.
+
 ## 2. Provision Azure with Terraform
 
 ```bash
@@ -109,11 +122,30 @@ After apply, capture the outputs:
 
 ```bash
 terraform output -raw browser_connection_string
+terraform output -raw browser_connection_string_placeholder_ikey
 terraform output -raw web_app_url
 terraform output -raw apim_proxy_base_url
+terraform output -raw apim_proxy_ikey_base_url
 ```
 
-## 3. Build and deploy the React app
+## 3. Optional placeholder-ikey mode
+
+Use `browser_connection_string_placeholder_ikey` if you want the browser to
+send only `00000000-0000-0000-0000-000000000000` and keep the real ikey out
+of the bundle.
+
+In this mode APIM:
+
+- accepts browser telemetry at `POST /v2-secure/v2/track`
+- uses a different browser-facing base path only so it can coexist with the
+  original `POST /v2/track` API in this demo
+- rewrites the backend URI to `/v2.1/track`
+- loads the real ikey from the secret named value
+  `appinsights-proxy-real-ikey`
+- rewrites each telemetry envelope's `iKey` and `name`
+- authenticates to Application Insights with its managed identity
+
+## 4. Build and deploy the React app
 
 Vite bakes `VITE_APPINSIGHTS_CONNECTION_STRING` into the bundle at **build
 time**. Terraform sets that value as an App Service app setting, so when
@@ -138,7 +170,7 @@ az webapp deploy --resource-group "$RG" --name "$WEBAPP" --src-path app.zip --ty
 
 Open the `web_app_url` output and click each button.
 
-## 4. Verify telemetry
+## 5. Verify telemetry
 
 In the Azure portal, open the Application Insights resource → **Logs** and run:
 
@@ -165,7 +197,8 @@ that resource (Access control → Role assignments).
 | [src/App.tsx](src/App.tsx) | UI with one button per telemetry type |
 | [terraform/main.tf](terraform/main.tf) | All Azure resources |
 | [terraform/apim-policy.xml.tftpl](terraform/apim-policy.xml.tftpl) | CORS + managed-identity inbound policy |
-| [terraform/outputs.tf](terraform/outputs.tf) | Web app URL, APIM URL, browser connection string |
+| [terraform/apim-policy-ikey.xml.tftpl](terraform/apim-policy-ikey.xml.tftpl) | Variant policy that injects the real ikey from an APIM named value |
+| [terraform/outputs.tf](terraform/outputs.tf) | Web app URL, APIM URLs, browser connection strings |
 
 ## Cleanup
 

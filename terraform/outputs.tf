@@ -24,3 +24,13 @@ output "browser_connection_string" {
   value       = local.browser_connection_string
   sensitive   = true
 }
+
+output "apim_proxy_ikey_base_url" {
+  description = "Variant proxy that injects the real ikey server-side."
+  value       = "${local.apim_base_url}/v2-secure"
+}
+
+output "browser_connection_string_placeholder_ikey" {
+  description = "Use with the variant proxy. APIM injects the real ikey; the browser only ever sees zeros."
+  value       = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=${local.apim_base_url}/v2-secure/"
+}
