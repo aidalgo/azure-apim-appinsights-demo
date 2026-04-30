@@ -1,48 +1,51 @@
 # React + APIM + Application Insights demo
 
-Minimal demo showing how a React (Vite) app can send browser telemetry through
-**Azure API Management** so the Application Insights ingestion endpoint is
-gated by APIM's managed identity instead of being called directly from the
-browser. It also includes an optional variant where the browser sends a
-placeholder ikey and APIM injects the real one server-side.
+This repo shows how a React (Vite) app can send browser telemetry through
+**Azure API Management** instead of posting directly to the public Application
+Insights ingestion endpoint. APIM becomes the controlled entry point: it can
+enforce policy, authenticate to Azure Monitor with its managed identity, and
+forward telemetry to Application Insights.
 
-In the default flow, the browser still uses the standard Application Insights
-JavaScript SDK shape: it knows which Application Insights resource it is
-writing to, but it posts telemetry to APIM instead of calling the ingestion
-endpoint directly. APIM then authenticates to Azure Monitor with its managed
-identity and forwards the payload to Application Insights.
+It includes two variants:
 
-This repo also includes an optional second flow for cases where you want to
-keep the real ikey out of the frontend bundle too. In that variant, the
-browser sends a placeholder ikey to a separate APIM endpoint, and APIM rewrites
-the telemetry with the real ikey from a secret named value before forwarding
-it.
+- **Default proxy flow**: the browser uses the normal Application Insights
+  JavaScript SDK and sends telemetry to APIM at `/v2/track`.
+- **Placeholder-ikey flow**: the browser sends a placeholder ikey to a
+  separate APIM endpoint, and APIM injects the real ikey from a secret named
+  value before forwarding the payload.
+
+This matters because a publicly reachable ingestion endpoint can be abused to
+send fake or excessive telemetry, which can pollute dashboards, trigger
+misleading alerts, and increase ingestion costs. The goal of this repo is to
+move that ingestion path behind controls you own.
 
 > **Important caveat.** The Application Insights JavaScript SDK still needs an
 > instrumentation key in the browser. Microsoft documents the ikey as a
-> non‑secret identifier, not a security token. What this design hides is the
-> *ingestion endpoint*: APIM authenticates to App Insights using its managed
-> identity, and App Insights local authentication is disabled, so the public
-> ingestion endpoint will reject any direct telemetry.
+> non‑secret identifier, not a security token. In the default flow, the
+> browser still carries the real ikey because it is the resource identifier
+> the SDK sends in the telemetry payload.
 >
-> The ikey is not acting as a secret in this design, but it is still the
-> resource identifier the browser SDK uses and sends in the telemetry
-> payload. APIM + managed identity replaces the authentication part, not the
-> resource identification part. If you put in a random value, the SDK may
-> initialize, but the telemetry will not be routed/accepted correctly by
-> Application Insights.
+> What this design hides is the *ingestion endpoint*, not the resource
+> identity: APIM authenticates to Azure Monitor with its managed identity, and
+> Application Insights local authentication is disabled, so the public
+> ingestion endpoint will reject direct telemetry. APIM + managed identity
+> replaces the authentication part, not the resource identification part. If
+> you put in a random value, the SDK may initialize, but the telemetry will
+> not be routed or accepted correctly.
 >
-> If you also want to keep the real ikey out of the frontend, this demo
-> includes an optional APIM variant where the browser sends a placeholder
-> ikey and APIM injects the real one server-side from a secret named value
-> before forwarding telemetry. That is a separate configuration from the
+> If you also want to keep the real ikey out of the frontend, use the optional
+> placeholder-ikey variant. In that mode, the browser sends a placeholder
+> value and APIM rewrites the payload with the real ikey from a secret named
+> value before forwarding it. That is a separate configuration from the
 > default `/v2/track` flow.
 
 ## Hardening with APIM
 
-Putting APIM in front of the ingestion endpoint also gives you a place to
-apply additional protections that are not possible when the browser talks to
-App Insights directly. Consider layering some or all of the following in the
+Putting APIM in front of the ingestion endpoint gives you a policy enforcement
+point that does not exist when the browser talks to App Insights directly.
+Beyond proxying telemetry, APIM lets you add controls around who can send
+traffic, how much they can send, and what kinds of requests are accepted.
+Consider layering some or all of the following into the
 `appinsights-proxy` API policy:
 
 - **Rate limiting / quotas** (`rate-limit-by-key`, `quota-by-key`) keyed on
@@ -68,21 +71,35 @@ App Insights directly. Consider layering some or all of the following in the
 - **Diagnostic logging** to App Insights/Log Analytics on the APIM API
   itself, so you can see who is calling the proxy and how.
 
-As a general best practice, add an ingestion-volume alert even if you already rate-limit at APIM. APIM helps control API traffic, but an ingestion alert helps catch direct telemetry spikes, noisy clients, or buggy instrumentation before they become unexpected cost or excessive noise in Application Insights. In this demo, Terraform creates an Azure Monitor scheduled query alert against the shared Log Analytics workspace, filtered to this specific Application Insights resource.
+Even if you already rate-limit at APIM, keep an ingestion-volume alert in
+place. APIM helps control traffic through the proxy, but an ingestion alert
+gives you a second signal for direct telemetry spikes, noisy clients, or buggy
+instrumentation before they turn into unexpected cost or excessive noise in
+Application Insights. In this demo, Terraform creates an Azure Monitor
+scheduled query alert against the shared Log Analytics workspace, filtered to
+this specific Application Insights resource.
 
 ## Architecture
 
+The default browser flow looks like this:
+
 ```
-Browser (React)
+Browser (React + Application Insights JS SDK)
    │  POST https://<apim>.azure-api.net/v2/track
    ▼
-Azure API Management (Developer tier, system-assigned MI)
-   │  + authentication-managed-identity (resource=https://monitor.azure.com)
+Azure API Management (Basic v2, system-assigned managed identity)
+  │  + inbound policy, CORS, authentication-managed-identity
+  │  + resource=https://monitor.azure.com
    ▼
-https://eastus2.in.applicationinsights.azure.com/v2.1/track  (local auth disabled)
+https://<region>.in.applicationinsights.azure.com/v2.1/track
+  │  local authentication disabled
    ▼
 Application Insights (workspace-based) → Log Analytics
 ```
+
+The optional placeholder-ikey variant uses the same backend destination and
+managed-identity hop, but the browser posts to
+`/v2-secure/v2/track` and APIM rewrites the telemetry before forwarding it.
 
 All resources live in a single resource group, in the configured Azure region
 (default: **East US 2**):
@@ -160,20 +177,23 @@ terraform output -raw apim_proxy_ikey_base_url
 
 ## 3. Optional placeholder-ikey mode
 
-Use `browser_connection_string_placeholder_ikey` if you want the browser to
-send only `00000000-0000-0000-0000-000000000000` and keep the real ikey out
-of the bundle.
+Use `browser_connection_string_placeholder_ikey` if you want the browser
+bundle to avoid carrying the real ikey. In that mode, the browser sends the
+placeholder value `00000000-0000-0000-0000-000000000000`, and APIM replaces it
+server-side before forwarding telemetry to Application Insights.
 
 In this mode APIM:
 
 - accepts browser telemetry at `POST /v2-secure/v2/track`
 - uses a different browser-facing base path only so it can coexist with the
-  original `POST /v2/track` API in this demo
+  original `POST /v2/track` API in this demo; if you deployed only this
+  variant, you would typically keep the normal `/v2/track` browser-facing path
 - rewrites the backend URI to `/v2.1/track`
 - loads the real ikey from the secret named value
   `appinsights-proxy-real-ikey`
 - rewrites each telemetry envelope's `iKey` and `name`
-- authenticates to Application Insights with its managed identity
+- authenticates to Application Insights with its managed identity before
+  forwarding the request
 
 ## 4. Build and deploy the React app
 
@@ -225,9 +245,12 @@ that resource (Access control → Role assignments).
 | --- | --- |
 | [src/appInsights.ts](src/appInsights.ts) | Initializes the JS SDK and exposes telemetry helpers |
 | [src/App.tsx](src/App.tsx) | UI with one button per telemetry type |
-| [terraform/main.tf](terraform/main.tf) | All Azure resources |
-| [terraform/apim-policy.xml.tftpl](terraform/apim-policy.xml.tftpl) | CORS + managed-identity inbound policy |
-| [terraform/apim-policy-ikey.xml.tftpl](terraform/apim-policy-ikey.xml.tftpl) | Variant policy that injects the real ikey from an APIM named value |
+| [src/main.tsx](src/main.tsx) | Bootstraps React and initializes Application Insights |
+| [terraform/main.tf](terraform/main.tf) | Core Azure resources: APIM, App Insights, Web App, named value, and ingestion alert |
+| [terraform/variables.tf](terraform/variables.tf) | Configurable inputs such as region, allowed origins, publisher email, and alert threshold |
+| [terraform/terraform.tfvars.example](terraform/terraform.tfvars.example) | Example Terraform values to copy into `terraform.tfvars` |
+| [terraform/apim-policy.xml.tftpl](terraform/apim-policy.xml.tftpl) | Default APIM policy with CORS, managed-identity auth, and client IP stamping |
+| [terraform/apim-policy-ikey.xml.tftpl](terraform/apim-policy-ikey.xml.tftpl) | Placeholder-ikey variant that injects the real ikey from an APIM named value |
 | [terraform/outputs.tf](terraform/outputs.tf) | Web app URL, APIM URLs, browser connection strings |
 
 ## Cleanup
